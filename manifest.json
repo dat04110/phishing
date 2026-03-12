@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "PhishGuard Enterprise",
+  "version": "7.1.0",
+  "description": "Enterprise Gmail protection — Gemini 2.0 Vision · URL Deep Scanner · Media AI Scanner · Hybrid Scoring · Auto-Quarantine",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "notifications",
+    "tabs",
+    "alarms",
+    "contextMenus",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "http://localhost:5001/*",
+    "https://safebrowsing.googleapis.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://www.virustotal.com/*",
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": [
+        "content/content.js"
+      ],
+      "css": [
+        "content/content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
