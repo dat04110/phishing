@@ -350,6 +350,12 @@
 
     row.dataset.pgRes = JSON.stringify(result);
     applyRowResult(row, result, d);
+
+    // ── PROACTIVE URL SCAN: quét links ngay từ inbox row ──
+    if (d.links && d.links.length > 0) {
+      scanRowUrls(row, d, result);
+    }
+
     refreshBar();
   }
 
@@ -770,6 +776,7 @@
       st.id = 'pg-sc-anim';
       st.textContent = `
         @keyframes pgPulseGlow{0%,100%{opacity:.5}50%{opacity:1}}
+        @keyframes pgPulse{0%,100%{opacity:1}50%{opacity:.55}}
         #pg-sc-confirm:not([disabled]):hover{
           filter:brightness(1.12);transform:translateY(-1px);
           box-shadow:0 4px 18px ${CB}.22)};
@@ -1502,7 +1509,107 @@
     }[t.type] || t.description || 'Mối đe dọa không xác định';
   }
 
-  // ══════════ URL SCANNER ══════════
+  async function scanRowUrls(row, emailData, currentResult) {
+    const urls = (emailData.links || []).filter(u => u.startsWith('http'));
+    if (!urls.length) return;
+
+    const results = await sendAsync('analyzeUrlBatch', {
+      urls: urls.slice(0, 5),
+      emailContext: `${emailData.sender} | ${emailData.subject}`.substring(0, 300)
+    });
+    if (!Array.isArray(results)) return;
+
+    const malicious = results.filter(r => r.status === 'malicious');
+    const suspicious = results.filter(r => r.status === 'suspicious');
+    if (!malicious.length && !suspicious.length) return;
+
+    // Tính URL boost
+    let urlBoost = 0;
+    const urlThreats = [];
+    for (const mr of malicious) {
+      urlBoost += Math.min(30, (mr.score || 50) * 0.5);
+      urlThreats.push({
+        type: 'link', text: `URL độc hại: ${(mr.url || '').substring(0, 60)}`,
+        severity: 'critical', score: Math.min(30, (mr.score || 50) * 0.5)
+      });
+    }
+    for (const sr of suspicious) {
+      urlBoost += Math.min(15, (sr.score || 30) * 0.3);
+      urlThreats.push({
+        type: 'link', text: `URL đáng ngờ: ${(sr.url || '').substring(0, 60)}`,
+        severity: 'high', score: Math.min(15, (sr.score || 30) * 0.3)
+      });
+    }
+
+    // Cập nhật risk
+    const newRisk = Math.min(100, (currentResult.riskPercent || 0) + Math.round(urlBoost));
+    const merged = [...urlThreats, ...(currentResult.threats || [])].slice(0, 15);
+    let newLevel = currentResult.riskLevel;
+    const types = new Set(merged.map(t => t.type));
+    if (newRisk >= 65 && types.size >= 2) newLevel = 'PHISHING';
+    else if (newRisk >= 35 && newLevel === 'SAFE') newLevel = 'SUSPICIOUS';
+    else if (malicious.length >= 2) newLevel = 'PHISHING';
+    else if (malicious.length >= 1 && newLevel === 'SAFE') newLevel = 'SUSPICIOUS';
+
+    // Ghi lại
+    currentResult.riskPercent = newRisk;
+    currentResult.riskLevel = newLevel;
+    currentResult.threats = merged;
+    currentResult.urlScanApplied = true;
+    row.dataset.pgRes = JSON.stringify(currentResult);
+
+    // Cập nhật visual
+    applyRowResult(row, currentResult, emailData);
+
+    // Thêm URL warning badge trên row
+    addUrlWarningBadge(row, malicious, suspicious);
+
+    refreshBar();
+  }
+
+  // ── Badge cảnh báo URL nguy hiểm trên inbox row ──
+  function addUrlWarningBadge(row, malicious, suspicious) {
+    row.querySelectorAll('.pg-url-warn').forEach(b => b.remove());
+    const cell = row.querySelector('.bog, .y6, .xT');
+    if (!cell) return;
+
+    const isMal = malicious.length > 0;
+    const color = isMal ? '#ef4444' : '#f59e0b';
+    const icon = isMal ? '⛔' : '⚠️';
+    const label = isMal
+      ? `${icon} ${malicious.length} link độc hại`
+      : `${icon} ${suspicious.length} link ngờ`;
+
+    const badge = document.createElement('span');
+    badge.className = 'pg-url-warn';
+    badge.style.cssText = `
+      display:inline-flex;align-items:center;gap:2px;
+      padding:1px 5px;border-radius:3px;margin-left:5px;
+      font-size:9px;font-weight:700;letter-spacing:.2px;
+      vertical-align:middle;white-space:nowrap;cursor:pointer;
+      background:${color}18;color:${color};border:1px solid ${color}44;
+      animation:pgPulse 2s ease infinite;
+    `;
+    badge.textContent = label;
+    badge.title = [
+      ...malicious.map(m => `⛔ ${(m.url || '').substring(0, 60)}`),
+      ...suspicious.map(s => `⚠️ ${(s.url || '').substring(0, 60)}`)
+    ].join('\n');
+
+    badge.addEventListener('click', e => {
+      e.stopPropagation();
+      e.preventDefault();
+      try {
+        const res = JSON.parse(row.dataset.pgRes || '{}');
+        const data = rowData(row);
+        showPanel(res, data, row);
+      } catch (_) { }
+    });
+
+    cell.appendChild(badge);
+  }
+
+  // ══════════ URL SCANNER (EMAIL DETAIL VIEW) ══════════
   async function scanEmailUrls(emailBody, emailContext) {
     if (!emailBody) return;
     const links = [...emailBody.querySelectorAll('a[href]')];
@@ -1542,7 +1649,6 @@
       const emailData = window.__pgEmail;
       const view = window.__pgView;
       if (currentResult && emailData) {
-        // Tính thêm riskPercent từ URL scan
         let urlBoost = 0;
         const urlThreats = [];
         for (const mr of maliciousUrls) {
@@ -1562,12 +1668,10 @@
           });
         }
 
-        // Cập nhật result
         const newRiskPercent = Math.min(100, (currentResult.riskPercent || 0) + Math.round(urlBoost));
         const existingThreats = currentResult.threats || [];
         const mergedThreats = [...urlThreats, ...existingThreats].slice(0, 15);
 
-        // Xác định risk level mới
         let newRiskLevel = currentResult.riskLevel;
         const uniqueTypes = new Set(mergedThreats.map(t => t.type));
         if (newRiskPercent >= 65 && uniqueTypes.size >= 2) newRiskLevel = 'PHISHING';
@@ -1575,14 +1679,12 @@
         else if (maliciousUrls.length >= 2) newRiskLevel = 'PHISHING';
         else if (maliciousUrls.length >= 1 && newRiskLevel === 'SAFE') newRiskLevel = 'SUSPICIOUS';
 
-        // Cập nhật object result
         currentResult.riskPercent = newRiskPercent;
         currentResult.riskLevel = newRiskLevel;
         currentResult.threats = mergedThreats;
         currentResult.urlScanApplied = true;
         window.__pgResult = currentResult;
 
-        // Cập nhật banner trong detail view
         if (view) injectBanner(currentResult, view, emailData);
         refreshBar();
       }
